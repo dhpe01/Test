@@ -1,0 +1,398 @@
+namespace: monitoring
+
+observability-alerts:
+  alerting:
+    prometheus:
+      enabled: true
+      splunkAlerts:
+        enabled: true
+    global:
+      region: eu-central-1
+      cluster: infra-techops-prod
+kube-prometheus-stack:
+  fullnameOverride: "prom"
+  prometheus-node-exporter:
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 256Mi
+    rbac:
+      pspEnabled: false
+    namespaceOverride: prometheus-node-exporter
+  kube-state-metrics:
+    resources:
+      limits:
+        memory: 1024Mi
+      requests:
+        cpu: 50m
+        memory: 1024Mi
+  alertmanager:
+    resources:
+      limits:
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 512Mi
+    config:
+      global:
+        smtp_smarthost: bma-smtp.ble.local:25
+        smtp_from: alertmanager@betssongroup.com
+        smtp_require_tls: false
+    ingress:
+      enabled: true
+      annotations:
+        kubernetes.io/ingress.class: alb
+        alb.ingress.kubernetes.io/scheme: internal
+        alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+        alb.ingress.kubernetes.io/backend-protocol: HTTP
+        alb.ingress.kubernetes.io/group.name: infra
+        alb.ingress.kubernetes.io/actions.ssl-redirect: '{"Type": "redirect", "RedirectConfig": { "Protocol": "HTTPS", "Port": "443", "StatusCode": "HTTP_301"}}'
+        alb.ingress.kubernetes.io/target-type: ip
+      paths:
+      - /*
+      hosts:
+      - alertmanager.infra.techops-prod.euc1.betsson.tech
+      pathType: ImplementationSpecific
+  kubelet:
+    serviceMonitor:
+      interval: 15s
+  prometheusOperator:
+    resources:
+      limits:
+        memory: 2048Mi
+      requests:
+        cpu: 500m
+        memory: 2048Mi
+    prometheusConfigReloader:
+      resources:
+        limits:
+          cpu: 0 #Used for flag config-reloader-cpu-limit to disable CPU limit - not for container CPU limit
+          memory: 64Mi
+        requests:
+          cpu: 200m
+          memory: 64Mi
+    tls:
+      enabled: false
+    admissionWebhooks:
+      enabled: false
+  prometheus:
+    ingress:
+      enabled: true
+      annotations:
+        kubernetes.io/ingress.class: alb
+        alb.ingress.kubernetes.io/scheme: internal
+        alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+        alb.ingress.kubernetes.io/backend-protocol: HTTP
+        alb.ingress.kubernetes.io/actions.ssl-redirect: '{"Type": "redirect", "RedirectConfig": { "Protocol": "HTTPS", "Port": "443", "StatusCode": "HTTP_301"}}'
+        alb.ingress.kubernetes.io/target-type: ip
+        alb.ingress.kubernetes.io/group.name: infra
+      paths:
+      - /*
+      hosts:
+      - prometheus.infra.techops-prod.euc1.betsson.tech
+      pathType: ImplementationSpecific
+    podDisruptionBudget:
+      enabled: true
+    prometheusSpec:
+      #https://github.com/prometheus-operator/prometheus-operator/issues/3587
+      containers:
+      - name: prometheus
+        livenessProbe:
+          failureThreshold: 1000
+        readinessProbe:
+          failureThreshold: 1000
+      resources:
+        limits:
+          memory: 30598Mi
+        requests:
+          cpu: 1000m
+          memory: 30598Mi
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            preference:
+              matchExpressions:
+              - key: monitoring
+                operator: In
+                values:
+                - "true"
+      tolerations:
+      - key: "stateful-services"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      - key: monitoring
+        operator: "Equal"
+        value: "true"
+        effect: NoSchedule
+      replicas: 2
+      externalLabels:
+        clustername: infra-techops-prod
+        cluster: infra-techops-prod
+        region: eu-central-1
+      replicaExternalLabelName: "prometheus_replica"
+      serviceMonitorSelectorNilUsesHelmValues: false
+      ruleNamespaceSelector: {}
+      ruleSelector: {}
+      ruleSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+      enableRemoteWriteReceiver: true
+      storageSpec:
+        volumeClaimTemplate:
+          spec:
+            accessModes: [ "ReadWriteOnce" ]
+            resources:
+              requests:
+                storage: 100Gi
+      additionalScrapeConfigs:
+      - job_name: 'kube-state-metrics'
+        honor_labels: true
+        metrics_path: /metrics
+        static_configs:
+        - targets:
+          - 'monitoring-kube-state-metrics.monitoring.svc.cluster.local:8080'
+      - job_name: nodes_linux
+        ec2_sd_configs:
+        - region: eu-central-1
+          filters:
+          - name: instance-state-name
+            values:
+            - running
+          - name: tag-key
+            values:
+            - haslinuxmetrics
+          port: 9100
+        relabel_configs:
+        - action: keep
+          regex: "true"
+          source_labels:
+          - __meta_ec2_tag_haslinuxmetrics
+        - source_labels:
+          - __meta_ec2_tag_Name
+          target_label: instance
+        - source_labels:
+          - __meta_ec2_tag_Service
+          target_label: service
+        - action: replace
+          regex: ([a-z]+-[a-z]+-\d).*
+          source_labels:
+          - __meta_ec2_availability_zone
+          target_label: region
+      - job_name: nodes_windows
+        ec2_sd_configs:
+        - region: eu-central-1
+          filters:
+          - name: instance-state-name
+            values:
+            - running
+          - name: tag-key
+            values:
+            - haswindowsMetrics
+          port: 9182
+        relabel_configs:
+        - action: keep
+          regex: "true"
+          source_labels:
+          - __meta_ec2_tag_haswindowsmetrics
+        - source_labels:
+          - __meta_ec2_tag_Name
+          target_label: instance
+        - source_labels:
+          - __meta_ec2_tag_Service
+          target_label: service
+        - action: replace
+          regex: ([a-z]+-[a-z]+-\d).*
+          source_labels:
+          - __meta_ec2_availability_zone
+          target_label: region
+      - job_name: foreman_cluster_stats
+        sample_limit: 60000
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        static_configs:
+        - targets: [ 'bfr-pforeman-01.ble.local:443' ]
+          labels:
+            location: 'eu-central-1'
+            foreman_type: 'master'
+            foreman_instance: 'foreman-master'
+      - job_name: snmp_exporter
+        scrape_interval: 60s
+        scrape_timeout: 50s
+        static_configs:
+        - targets: [ '10.100.12.71', '10.200.12.72' ]
+        metrics_path: /snmp
+        params:
+          auth: [ snmp_v2 ]
+          module: [ if_mib ]
+        relabel_configs:
+        - source_labels: [ __address__ ]
+          target_label: __param_target
+        - source_labels: [ __param_target ]
+          target_label: instance
+        - target_label: __address__
+          replacement: prometheus-snmp-exporter.monitoring.svc.cluster.local:9116
+      - job_name: 'splunk-node-exporter'
+        honor_labels: true
+        metrics_path: /metrics
+        scrape_interval: 60s
+        scrape_timeout: 10s
+        scheme: http
+        static_configs:
+          - targets:
+              ######################## SPLUNK NODE-EXPORTER HOSTS ########################
+              # These external Splunk hosts expose metrics on port 9100 and must be scraped
+              # by Prometheus using additionalScrapeConfigs. Hosts are grouped by Splunk
+              # layer (IHF, HF, HEC, MGMT) and by region for clarity.
+              ############################################################################
+
+              # --------------------------------------------------------------------------
+              # *** SPLUNK INTERMEDIATE HEAVY FORWARDER (IHF) LAYER ***
+              # --------------------------------------------------------------------------
+
+              # IHF - BMA Region
+              # - "bma-splunkihf01.ble.local:9100"
+              # - "bma-splunkihf02.ble.local:9100"
+              # - "bma-splunkihf03.ble.local:9100"
+              # - "bma-splunkihf04.ble.local:9100"
+              # - "bma-splunkihf05.ble.local:9100"
+
+              # IHF - BGE Region
+              # (No IHF hosts in BGE)
+
+              # IHF - EUC1 Region
+              - "de01tepobs01s01.ble.local:9100"
+              - "de01tepobs01s02.ble.local:9100"
+              - "de01tepobs01s03.ble.local:9100"
+              - "de01tepobs05s01.ble.local:9100"
+              - "de01tepobs05s02.ble.local:9100"
+              - "de01tepobs05s03.ble.local:9100"
+
+              # IHF - SAE1 Region
+              # (No IHF hosts in SAE1)
+
+
+              # --------------------------------------------------------------------------
+              # *** SPLUNK HEAVY FORWARDER (HF) LAYER ***
+              # --------------------------------------------------------------------------
+
+              # HF - BMA Region
+              # - "bma-splunk-hf01.ble.local:9100"
+              # - "bma-splunk-hf02.ble.local:9100"
+              # - "bma-splunk-hf03.ble.local:9100"
+              # - "bma-splunk-hf04.ble.local:9100"
+              # - "bma-splunk-hf05.ble.local:9100"
+              # - "bma-splunk-hf06.ble.local:9100"
+              # - "bma-splunk-hf07.ble.local:9100"
+              # - "bma-splunk-hf08.ble.local:9100"
+              # - "bma-splunk-prod-hf10.ble.local:9100"
+              # - "bma-splunk-prod-hf11.ble.local:9100"
+              # - "bma-splunk-prod-hf12.ble.local:9100"
+              # - "bma-splunk-prod-hf15.ble.local:9100"
+
+              # HF - BGE Region
+              # - "bge-splunk-hf01.ble.local:9100"
+              # - "bge-splunk-hf02.ble.local:9100"
+              # - "bge-splunk-hf03.ble.local:9100"
+              # - "bge-splunk-hf04.ble.local:9100"
+
+              # HF - EUC1 Region
+              # (No HF hosts in EUC1)
+
+              # HF - SAE1 Region
+              # - "br01tepobs01s01.ble.local:9100"
+              # - "br01tepobs01s02.ble.local:9100"
+
+              # HF - APSE1 Region
+              # - "sg01tepobs05s21.ble.local:9100"
+              # - "sg01tepobs05s22.ble.local:9100"
+
+              # --------------------------------------------------------------------------
+              # *** SPLUNK HTTP EVENT COLLECTOR (HEC) LAYER ***
+              # --------------------------------------------------------------------------
+
+              # HEC - BMA Region
+              # - "bma-splunk-hec01.ble.local:9100"
+              # - "bma-splunk-hec02.ble.local:9100"
+
+              # HEC - BGE Region
+              # (No HEC hosts in BGE)
+
+              # HEC - EUC1 Region
+              # (No HEC hosts in EUC1)
+
+              # HEC - SAE1 Region
+              # - "br01tepobs01s03.ble.local:9100"
+              # - "br01tepobs01s04.ble.local:9100"
+
+              # HEC - APSE1 Region
+              # - "sg01tepobs05s23.ble.local:9100"
+              # - "sg01tepobs05s24.ble.local:9100"
+
+              # --------------------------------------------------------------------------
+              # *** SPLUNK MANAGEMENT (MGMT) LAYER ***
+              # --------------------------------------------------------------------------
+
+              # MGMT - BMA Region
+              # - "bma-splunk-prod-dmc01.ble.local:9100"
+              # - "bma-splunk-prod-lic01.ble.local:9100"
+
+              # Deployment Hosts - BMA
+              # - "bma-splunk-prod-shd02.ble.local:9100"
+
+              # Deployment Hosts - EUC1
+              - "de01tepobs01s04.ble.local:9100"
+
+        relabel_configs:
+          - source_labels: [__address__]
+            regex: (.*):9100
+            target_label: instance
+            replacement: $1
+      thanos:
+        minTime: -10d
+        objectStorageConfig:
+          key: objstore.yml
+          name: thanos-sidecar
+        resources:
+          limits:
+            memory: 1024Mi
+          requests:
+            cpu: 100m
+            memory: 1024Mi
+      serviceAccount:
+        annotations:
+          eks.amazonaws.com/role-arn: "arn:aws:iam::956126243646:role/eks-infra-techops-prod-prom-prometheus-euc1"
+  kubeControllerManager:
+    enabled: false
+  kubeScheduler:
+    enabled: false
+  kubeProxy:
+    enabled: false
+  defaultRules:
+    rules:
+      alertmanager: false
+      etcd: false
+      configReloaders: false
+      general: false
+      kubeApiserverSlos: false
+      kubeControllerManager: false
+      kubeProxy: false
+      kubernetesApps: false
+      kubernetesResources: false
+      kubernetesStorage: false
+      kubernetesSystem: false
+      kubeSchedulerAlerting: false
+      kubeStateMetrics: false
+      network: false
+      nodeExporterAlerting: false
+      prometheus: false
+      prometheusOperator: false
+    additionalRuleLabels:
+      team: infra-platform
+  additionalPrometheusRulesMap: {}
+
+extras:
+  externalSecret:
